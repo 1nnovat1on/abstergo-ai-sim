@@ -84,9 +84,14 @@ def aggregate_batches(batches: List[Batch]) -> Batch:
 
 
 def train(config: TrainingConfig) -> PolicyNetwork:
-    try:
+    # Choose the best available multiprocessing start method across platforms.
+    # Windows lacks "fork", so fall back to a supported option instead of raising.
+    available_methods = mp.get_all_start_methods()
+    if "fork" in available_methods:
         mp.set_start_method("fork", force=True)
-    except RuntimeError:
+    elif "forkserver" in available_methods:
+        mp.set_start_method("forkserver", force=True)
+    else:
         mp.set_start_method("spawn", force=True)
     rng = random.Random(config.seed)
     policy = PolicyNetwork(config.policy_config, rng)
