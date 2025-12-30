@@ -18,7 +18,10 @@ Run a short training session with defaults:
 python -m wind_balance_sim
 ```
 
-Or customize parameters:
+The trainer now saves and resumes from `checkpoints/latest_policy.json` by default. To resume from that file explicitly, pass a
+`TrainingConfig` with the same path or point to a different checkpoint.
+
+You can also customize parameters:
 
 ```bash
 python - <<'PY'
@@ -35,4 +38,20 @@ train(config)
 PY
 ```
 
-The training loop prints per-iteration progress and exits after the configured number of iterations.
+The training loop prints per-iteration progress, writes the latest policy to disk, and can render a quick demo episode to visualize
+what the agent is doing:
+
+```bash
+python - <<'PY'
+from wind_balance_sim import TrainingConfig, train
+
+train(
+    TrainingConfig(
+        iterations=2,
+        steps_per_worker=128,
+        render_demo=True,  # print an ASCII visualization of one episode after training
+        demo_sleep=0.02,   # optional delay to slow the frames down
+    )
+)
+PY
+```
