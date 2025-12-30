@@ -1,8 +1,10 @@
 """Minimal multiprocessing training loop using REINFORCE."""
 from __future__ import annotations
 
+import os
 import multiprocessing as mp
 import random
+import time
 from dataclasses import dataclass, field
 from typing import Dict, List
 
@@ -18,7 +20,12 @@ class TrainingConfig:
     envs_per_worker: int = 4
     gamma: float = 0.99
     learning_rate: float = 0.05
-    seed: int = 0
+    seed: int | None = None
+    save_path: str | None = "checkpoints/latest_policy.json"
+    load_path: str | None = None
+    render_demo: bool = False
+    demo_steps: int = 240
+    demo_sleep: float = 0.0
     env_config: EnvConfig = field(default_factory=EnvConfig)
     policy_config: PolicyConfig = field(default_factory=PolicyConfig)
 
@@ -83,6 +90,40 @@ def aggregate_batches(batches: List[Batch]) -> Batch:
     return Batch(obs=obs, actions=actions, returns=returns)
 
 
+def _choose_seed(seed: int | None) -> int:
+    return seed if seed is not None else random.randrange(0, 2**31)
+
+
+def render_ascii(env: BalanceEnv, width: int = 64) -> str:
+    c = env.config
+    def project(value: float, domain: float) -> int:
+        return max(0, min(width - 1, int((value / domain) * (width - 1))))
+
+    plat_x = project(env.platform.x, c.width)
+    stick_x = project(env.stick.x, c.width)
+    ball_x = project(env.ball.x, c.width)
+
+    base = [" " for _ in range(width)]
+    base[plat_x] = "="
+    base[stick_x] = "|"
+    base[ball_x] = "o"
+    return "".join(base)
+
+
+def render_episode(policy: PolicyNetwork, env_config: EnvConfig, steps: int, sleep: float = 0.0) -> None:
+    env = BalanceEnv(env_config)
+    obs = env.reset()
+    for step in range(steps):
+        action, _ = policy.sample_action(obs)
+        obs, reward, done, info = env.step(action)
+        print(f"demo step {step:04d} action={action:+d} reward={reward:+.1f} supported={info['ball_supported']}\n{render_ascii(env)}")
+        if sleep:
+            time.sleep(sleep)
+        if done:
+            print("episode ended early")
+            break
+
+
 def train(config: TrainingConfig) -> PolicyNetwork:
     # Choose the best available multiprocessing start method across platforms.
     # Windows lacks "fork", so fall back to a supported option instead of raising.
@@ -93,17 +134,26 @@ def train(config: TrainingConfig) -> PolicyNetwork:
         mp.set_start_method("forkserver", force=True)
     else:
         mp.set_start_method("spawn", force=True)
-    rng = random.Random(config.seed)
-    policy = PolicyNetwork(config.policy_config, rng)
+    seed = _choose_seed(config.seed)
+    rng = random.Random(seed)
+    policy: PolicyNetwork
+    load_path = config.load_path or config.save_path
+    if load_path and os.path.exists(load_path):
+        policy = PolicyNetwork.load(load_path, rng)
+        print(f"Loaded existing policy from {load_path}")
+    else:
+        policy = PolicyNetwork(config.policy_config, rng)
+        if load_path:
+            print(f"No existing policy at {load_path}, starting fresh")
 
     parent_conns = []
     procs = []
     for worker_idx in range(config.num_workers):
         parent_conn, child_conn = mp.Pipe()
-        seed = config.seed + worker_idx * 100
+        worker_seed = seed + worker_idx * 100
         proc = mp.Process(
             target=rollout_worker,
-            args=(child_conn, config.env_config, config.policy_config, config.envs_per_worker, seed),
+            args=(child_conn, config.env_config, config.policy_config, config.envs_per_worker, worker_seed),
             daemon=True,
         )
         proc.start()
@@ -137,11 +187,19 @@ def train(config: TrainingConfig) -> PolicyNetwork:
             avg_return = mean(batch.returns)
             total_steps = len(batch.obs)
             print(f"Iteration {iteration + 1}/{config.iterations} - steps: {total_steps} avg_return: {avg_return:.3f}")
+
+            if config.save_path:
+                policy.save(config.save_path)
+                print(f"Saved policy to {config.save_path}")
     finally:
         for conn in parent_conns:
             conn.send({"cmd": "close"})
         for proc in procs:
             proc.join(timeout=1)
+
+    if config.render_demo:
+        print("\nRendering a demo episode with the latest policy:\n")
+        render_episode(policy, config.env_config, config.demo_steps, sleep=config.demo_sleep)
 
     return policy
 

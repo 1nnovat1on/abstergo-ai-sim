@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import math
+import json
+from pathlib import Path
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from typing import Dict, List, Sequence, Tuple
 
 
@@ -212,3 +214,22 @@ class PolicyNetwork:
         self.b2 = list(weights["b2"])
         self.W3 = [row[:] for row in weights["W3"]]
         self.b3 = list(weights["b3"])
+
+    def to_payload(self) -> Dict[str, object]:
+        """Return a JSON-serializable payload with config and weights."""
+        return {"config": asdict(self.config), "weights": self.get_weights()}
+
+    def save(self, path: str | Path) -> None:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as f:
+            json.dump(self.to_payload(), f)
+
+    @classmethod
+    def load(cls, path: str | Path, rng: random.Random | None = None) -> "PolicyNetwork":
+        with Path(path).open("r", encoding="utf-8") as f:
+            payload = json.load(f)
+        config = PolicyConfig(**payload.get("config", {}))
+        net = cls(config, rng)
+        net.set_weights(payload["weights"])
+        return net
